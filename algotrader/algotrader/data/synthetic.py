@@ -40,6 +40,9 @@ def generate(
     seed: int = 42,
     start_price: float = 3300.0,
     start: datetime | None = None,
+    base_sigma: float = BASE_SIGMA,
+    include_weekends: bool = False,
+    maintenance_break: bool = True,
 ) -> Iterator[Bar]:
     rng = random.Random(seed)
     if start is None:
@@ -50,18 +53,18 @@ def generate(
     day = start
 
     while produced_days < days:
-        if day.weekday() >= 5:  # skip weekends
+        if not include_weekends and day.weekday() >= 5:
             day += timedelta(days=1)
             continue
         t = day.replace(hour=0, minute=0, second=0, microsecond=0)
         end_of_day = t + timedelta(days=1)
         while t < end_of_day:
-            if t.hour == 21:  # daily maintenance break
+            if maintenance_break and t.hour == 21:  # daily maintenance break
                 t += timedelta(minutes=tf_minutes)
                 continue
             if rng.random() > STAY_PROB:
                 regime = rng.choice([r for r in REGIMES if r != regime])
-            sigma = BASE_SIGMA * _vol_profile(t.hour) * math.sqrt(tf_minutes / 5.0)
+            sigma = base_sigma * _vol_profile(t.hour) * math.sqrt(tf_minutes / 5.0)
             o = price
             c = o * math.exp(DRIFT[regime] + sigma * rng.gauss(0.0, 1.0))
             wick_hi = abs(rng.gauss(0.0, sigma * 0.5))

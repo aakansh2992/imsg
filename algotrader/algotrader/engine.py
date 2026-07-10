@@ -13,11 +13,13 @@ checked on the following bar, never the same one.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 from .broker.paper import PaperBroker, Trade
 from .config import Config
 from .confluence import Confluence, Decision
 from .data.bar import Bar
-from .indicators import ADX, ATR, SessionVWAP
+from .indicators import ADX, ATR, EMA, SessionVWAP
 from .risk import RiskManager
 from .strategies import build_strategies
 from .strategies.base import MarketContext, Strategy
@@ -29,10 +31,14 @@ class Engine:
         cfg: Config,
         broker: PaperBroker | None = None,
         strategies: list[Strategy] | None = None,
+        equity_fn: Callable[[float], float] | None = None,
+        entry_gate: Callable[[str, float], bool] | None = None,
     ) -> None:
         self.cfg = cfg
+        self.symbol = cfg.symbol
         self.broker = broker or PaperBroker(
-            cfg.initial_equity, cfg.spread, cfg.slippage, cfg.commission_per_trade
+            cfg.initial_equity, cfg.spread, cfg.slippage, cfg.commission_per_trade,
+            symbol=cfg.symbol,
         )
         self.strategies = strategies or build_strategies(cfg)
         self.confluence = Confluence(cfg)
@@ -40,6 +46,12 @@ class Engine:
         self._atr = ATR(cfg.atr_period)
         self._adx = ADX(cfg.adx_period)
         self._vwap = SessionVWAP()
+        # In a portfolio, equity is the shared account's, not this broker's;
+        # the entry gate lets the portfolio enforce cross-instrument limits.
+        self._equity = equity_fn or self.broker.equity
+        self._entry_gate = entry_gate or (lambda symbol, risk_usd: True)
+        self._ema_fast = EMA(cfg.ema_trigger_fast)
+        self._ema_slow = EMA(cfg.ema_trigger_slow)
         self.equity_curve: list[tuple] = []  # (ts, equity)
         self.decisions: list[tuple] = []     # (ts, Decision) for entries taken
 
@@ -53,14 +65,16 @@ class Engine:
         for trade in self.broker.mark(bar):
             self.risk.on_trade_closed(trade)
 
-        # 2. day roll + equity limits (uses mark-to-market equity)
-        self.risk.on_bar(bar.ts, self.broker.equity(bar.close))
+        # 2. day roll + equity limits (uses mark-to-market account equity)
+        self.risk.on_bar(bar.ts, self._equity(bar.close))
 
         # 3. shared indicators and signals (strategies must see every bar
         #    to stay warm, even when trading is halted)
         self._atr.update(bar.high, bar.low, bar.close)
         self._adx.update(bar.high, bar.low, bar.close)
         self._vwap.update(bar.ts, bar.high, bar.low, bar.close, bar.volume)
+        self._ema_fast.update(bar.close)
+        self._ema_slow.update(bar.close)
         ctx = MarketContext(atr=self._atr.value, adx=self._adx.value, vwap=self._vwap.value)
         signals = [(s.name, s.kind, s.on_bar(bar, ctx)) for s in self.strategies]
 
@@ -69,11 +83,11 @@ class Engine:
         if flatten:
             if self.broker.position is not None:
                 self._close(bar, flatten)
-            self.equity_curve.append((bar.ts, self.broker.equity(bar.close)))
+            self.equity_curve.append((bar.ts, self._equity(bar.close)))
             return
 
         if not ctx.ready:
-            self.equity_curve.append((bar.ts, self.broker.equity(bar.close)))
+            self.equity_curve.append((bar.ts, self._equity(bar.close)))
             return
 
         decision: Decision = self.confluence.decide(signals, ctx.adx)
@@ -95,21 +109,32 @@ class Engine:
             self._close(bar, "flip")
             pos = None
 
-        # 7. entry
+        # 7. entry — confluence approved, risk gates open, EMA 5/9 timing
+        #    trigger aligned (a filter on approved entries, never a voter),
+        #    and the portfolio-level gate (concurrency / total open risk) ok
         if pos is None and decision.direction != 0 and self.risk.can_open(bar.ts):
-            units = self.risk.size(self.broker.equity(bar.close), ctx.atr)
-            if units > 0:
+            if self._trigger_aligned(decision.direction):
+                units = self.risk.size(self._equity(bar.close), ctx.atr)
                 dist = self.risk.stop_distance(ctx.atr)
-                sl = bar.close - decision.direction * dist
-                tp = bar.close + decision.direction * dist * self.cfg.tp_r_multiple
-                self.broker.open(decision.direction, units, bar, sl, tp)
-                self.risk.on_trade_opened()
-                self.decisions.append((bar.ts, decision))
+                if units > 0 and self._entry_gate(self.symbol, units * dist):
+                    sl = bar.close - decision.direction * dist
+                    tp = bar.close + decision.direction * dist * self.cfg.tp_r_multiple
+                    self.broker.open(decision.direction, units, bar, sl, tp)
+                    self.risk.on_trade_opened()
+                    self.decisions.append((bar.ts, decision))
 
-        self.equity_curve.append((bar.ts, self.broker.equity(bar.close)))
+        self.equity_curve.append((bar.ts, self._equity(bar.close)))
+
+    def _trigger_aligned(self, direction: int) -> bool:
+        if not self.cfg.use_ema_trigger:
+            return True
+        f, s = self._ema_fast.value, self._ema_slow.value
+        if f is None or s is None:
+            return False
+        return direction * (f - s) > 0
 
     def finish(self, last_bar: Bar | None) -> None:
         """Close anything still open at the end of the data."""
         if last_bar is not None and self.broker.position is not None:
             self._close(last_bar, "end")
-            self.equity_curve.append((last_bar.ts, self.broker.equity(last_bar.close)))
+            self.equity_curve.append((last_bar.ts, self._equity(last_bar.close)))

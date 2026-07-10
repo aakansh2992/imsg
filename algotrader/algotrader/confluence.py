@@ -4,7 +4,11 @@ The rules:
   1. Detect the regime from ADX (trending / ranging / mixed) and weight each
      strategy by whether its style fits the regime (trend followers get more
      say in trends, mean-reverters in ranges).
-  2. Compute a weighted score = sum(weight * direction * confidence).
+  2. Compute a weighted score = sum(weight * direction * confidence), with
+     each strategy's weight divided by the size of its family (trend vs.
+     reversion). This family normalization means three correlated trend
+     voters carry the same total influence as one family — adding echoes of
+     the same signal cannot stack the vote.
   3. Trade only if the score clears ``min_score``, at least ``min_agree``
      strategies independently agree with the direction, and no strategy
      issues a high-confidence veto in the opposite direction.
@@ -56,9 +60,13 @@ class Confluence:
     def decide(self, items: Sequence[tuple[str, str, Signal]], adx: float) -> Decision:
         """items: (strategy_name, strategy_kind, signal) per strategy."""
         regime = self.regime(adx)
+        family_size: dict[str, int] = {}
+        for _, kind, _ in items:
+            family_size[kind] = family_size.get(kind, 0) + 1
         score = 0.0
         for _, kind, sig in items:
-            score += self._weight(kind, regime) * sig.direction * sig.confidence
+            w = self._weight(kind, regime) / family_size[kind]
+            score += w * sig.direction * sig.confidence
 
         candidate = 1 if score > 0 else -1 if score < 0 else 0
         if candidate == 0:

@@ -35,6 +35,14 @@ class Trade:
     exit: float
     pnl: float
     reason: str  # "sl" | "tp" | "flip" | "eod" | "daily_loss" | "profit_lock" | "end"
+    symbol: str = ""
+
+
+class Account:
+    """Cash shared by every broker in a portfolio — one pool of equity."""
+
+    def __init__(self, cash: float) -> None:
+        self.cash = cash
 
 
 class PaperBroker:
@@ -44,13 +52,20 @@ class PaperBroker:
         spread: float = 0.0,
         slippage: float = 0.0,
         commission_per_trade: float = 0.0,
+        symbol: str = "",
+        account: Account | None = None,
     ) -> None:
-        self.cash = initial_equity
+        self._account = account if account is not None else Account(initial_equity)
+        self.symbol = symbol
         self.spread = spread
         self.slippage = slippage
         self.commission = commission_per_trade
         self._position: Position | None = None
         self.trades: list[Trade] = []
+
+    @property
+    def cash(self) -> float:
+        return self._account.cash
 
     # -- state ----------------------------------------------------------------
     @property
@@ -91,8 +106,11 @@ class PaperBroker:
         p = self._position
         assert p is not None
         pnl = p.direction * p.units * (exit_price - p.entry) - self.commission
-        trade = Trade(p.entry_ts, ts, p.direction, p.units, p.entry, exit_price, pnl, reason)
-        self.cash += pnl
+        trade = Trade(
+            p.entry_ts, ts, p.direction, p.units, p.entry, exit_price, pnl, reason,
+            symbol=self.symbol,
+        )
+        self._account.cash += pnl
         self.trades.append(trade)
         self._position = None
         return trade

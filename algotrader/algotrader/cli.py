@@ -3,6 +3,8 @@
     python -m algotrader synth    --out data.csv --days 60 --seed 42
     python -m algotrader backtest --data data.csv [--config cfg.json]
                                   [--trades] [--daily] [--json-report out.json]
+    python -m algotrader live     [--symbols XAUUSD,XAGUSD,WTIUSD,BTCUSD]
+                                  [--days 5] [--speed 300] [--port 8899]
 """
 from __future__ import annotations
 
@@ -15,7 +17,11 @@ from .backtest import run
 from .config import Config
 from .data.bar import read_csv, write_csv
 from .data.synthetic import generate
+from .feed import synthetic_feed
+from .instruments import DEFAULT_SYMBOLS
 from .metrics import Report
+from .portfolio import PortfolioEngine
+from .server import start_server
 
 
 def _fmt_report(r: Report) -> str:
@@ -72,6 +78,49 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live(args: argparse.Namespace) -> int:
+    cfg = Config.from_json(args.config) if args.config else Config()
+    if args.equity is not None:
+        cfg.initial_equity = args.equity
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    portfolio = PortfolioEngine(cfg, symbols)
+    httpd = start_server(args.port, portfolio.status)
+    host_port = httpd.server_address[1]
+    print(f"dashboard: http://localhost:{host_port}/  (any device on this network)")
+    print(f"paper trading {', '.join(symbols)} — {args.days} synthetic day(s), "
+          f"speed x{args.speed:g} (0 = flat out)\n")
+
+    trades_seen = 0
+    feed = synthetic_feed(symbols, days=args.days, seed=args.seed, speed=args.speed)
+    try:
+        for sym, bar in feed:
+            portfolio.on_bar(sym, bar)
+            all_trades = portfolio.all_trades()
+            for t in all_trades[trades_seen:]:
+                side = "LONG " if t.direction == 1 else "SHORT"
+                print(f"{t.exit_ts:%Y-%m-%d %H:%M}  {t.symbol:7s} {side}"
+                      f" {t.units:10.3f} @ {t.entry:10.2f} -> {t.exit:10.2f}"
+                      f"  {t.pnl:+10.2f}  [{t.reason}]")
+            trades_seen = len(all_trades)
+    except KeyboardInterrupt:
+        print("\ninterrupted — flattening")
+    finally:
+        portfolio.finish()
+        httpd.shutdown()
+        httpd.server_close()
+
+    r = portfolio.account_report()
+    print()
+    print(_fmt_report(r))
+    per_sym = {
+        sym: round(sum(t.pnl for t in e.broker.trades), 2)
+        for sym, e in portfolio.engines.items()
+    }
+    print(f"per-symbol P&L: {per_sym}")
+    print(f"max concurrent positions: {portfolio.max_concurrent_seen}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="algotrader",
                                 description="Confluence-based intraday XAUUSD algo trader")
@@ -93,6 +142,18 @@ def main(argv: list[str] | None = None) -> int:
     pb.add_argument("--daily", action="store_true", help="print per-day P&L")
     pb.add_argument("--json-report", help="write the report as JSON")
     pb.set_defaults(fn=cmd_backtest)
+
+    pl = sub.add_parser("live", help="24x7 multi-market paper trading + web dashboard")
+    pl.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS),
+                    help="comma-separated instrument symbols")
+    pl.add_argument("--days", type=int, default=5, help="synthetic days to stream")
+    pl.add_argument("--seed", type=int, default=42)
+    pl.add_argument("--speed", type=float, default=300.0,
+                    help="sim-time multiplier vs wall clock (0 = as fast as possible)")
+    pl.add_argument("--port", type=int, default=8899, help="dashboard port")
+    pl.add_argument("--config", help="JSON config overriding defaults")
+    pl.add_argument("--equity", type=float, help="override initial equity")
+    pl.set_defaults(fn=cmd_live)
 
     args = p.parse_args(argv)
     return args.fn(args)

@@ -33,17 +33,29 @@ class Config:
     donchian_period: int = 20
     vwap_dev_threshold: float = 2.0  # in ATRs from session VWAP
 
+    # Market-structure (SMC) strategies
+    enable_liquidity_sweep: bool = True   # stop-hunt fade (reversion family)
+    enable_bos_choch: bool = False        # overlaps Donchian; off until it earns a seat
+    swing_k: int = 3                      # fractal pivot half-width
+
+    # EMA 5/9 entry trigger: a timing filter on approved entries, NOT a voter
+    use_ema_trigger: bool = True
+    ema_trigger_fast: int = 5
+    ema_trigger_slow: int = 9
+
     # Confluence / regime
     trend_adx: float = 25.0   # ADX >= this -> trending regime
     range_adx: float = 20.0   # ADX <= this -> ranging regime
     weight_aligned: float = 1.0   # strategy kind matches regime
     weight_counter: float = 0.4   # strategy kind opposes regime
     weight_mixed: float = 0.7     # neutral regime
-    min_score: float = 0.9        # |weighted score| needed to trade
+    # Scores are family-normalized (each strategy's weight is divided by its
+    # family size), so correlated voters can't stack the vote; max |score| ~2.
+    min_score: float = 0.5        # |weighted score| needed to trade
     min_agree: int = 2            # strategies agreeing with the trade direction
     min_signal_conf: float = 0.25  # confidence needed to count as "agreeing"
     veto_confidence: float = 0.85  # a strong opposite signal vetoes the trade
-    exit_score: float = 0.6       # opposite score that flips us out of a position
+    exit_score: float = 0.35      # opposite score that flips us out of a position
 
     # Risk management
     risk_per_trade_pct: float = 0.005   # 0.5% of equity risked per trade
@@ -57,6 +69,10 @@ class Config:
     min_units: float = 0.0
     max_units: float = 100.0            # ounces
     unit_step: float = 0.01
+
+    # Portfolio-level risk (multi-instrument live mode)
+    max_concurrent_positions: int = 3
+    max_total_open_risk_pct: float = 0.015  # sum of open initial risks / equity
 
     # Trading hours (UTC). XAUUSD is liquid through London and New York.
     sessions: list[list[str]] = field(

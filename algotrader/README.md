@@ -1,54 +1,76 @@
-# algotrader — confluence-based intraday XAUUSD trader
+# algotrader — confluence-based multi-market algo trader
 
 A self-contained (pure-stdlib Python ≥ 3.10, zero dependencies) algorithmic
-trading system for commodities, tuned for spot gold (XAUUSD) on 5-minute
-bars. Five classic strategies vote; a regime-aware confluence engine only
-trades when they agree; a risk layer enforces the discipline that makes
-"end the day flat and preferably green" an actual rule rather than a hope.
+trading system built around one idea: independent signal families vote,
+regime-aware confluence gates the vote, and a hard risk layer makes "end the
+day flat and preferably green" an enforced rule rather than a hope.
+
+It runs as a single always-on process that scans **every configured market
+around the clock** — gold, silver and oil through their weekday
+London/New-York/Asia hours, crypto through nights and weekends — and serves
+a **responsive web dashboard**, so any phone, tablet or laptop on the
+network is a live viewer. Devices are windows into the bot, not hosts of
+it: the trading loop never depends on someone's screen staying unlocked.
 
 ## ⚠️ Honest disclaimer, up front
 
-No algorithm can **guarantee** daily profitability — anyone who promises that
-is selling something. What this system does instead is engineer the two
-things that are controllable:
+No algorithm can **guarantee** daily profitability — anyone who promises
+that is selling something. What this system engineers is the controllable
+part:
 
-1. **Edge selection** — trade only when multiple independent, proven signal
+1. **Edge selection** — trade only when multiple independent signal
    families agree, weighted by the current market regime.
-2. **Loss control** — hard daily loss limit, profit lock, loss-streak
-   breaker, session gating, ATR-scaled sizing, and a forced end-of-day
-   flatten so no single day or overnight gap can do serious damage.
+2. **Loss control** — account-level daily loss limit and profit lock,
+   loss-streak breaker, per-market session gating, ATR-scaled sizing,
+   portfolio concurrency/risk caps, and a forced end-of-day flatten per
+   instrument so no single day or overnight gap can do serious damage.
 
 All results from the bundled synthetic generator validate the *machinery*,
-not the edge. Before any real capital: run on real historical data,
-walk-forward validate, then paper trade against a demo broker account.
-This is not financial advice.
+not the edge. On synthetic random-walk data the system loses slowly to
+costs — that is the correct, honest baseline. Market-structure strategies
+(liquidity sweeps) exploit the behaviour of other traders' stops, which
+synthetic data does not contain at all. Before any real capital: run on
+real historical data, walk-forward validate, then paper trade against a
+demo broker account for weeks. This is not financial advice.
 
 ## Architecture
 
 ```
-bars ──► Engine ──► shared indicators (ATR, ADX, session VWAP)
-              │
-              ├─► Strategies (each returns direction −1/0/+1 + confidence)
-              │     trend_ema           EMA(21/55) crossover        [trend]
-              │     macd_momentum       MACD hist + acceleration    [trend]
-              │     donchian_breakout   20-bar channel breakout     [trend]
-              │     rsi_reversion       RSI(14) + Bollinger fade    [reversion]
-              │     vwap_deviation      fade ≥2 ATR from VWAP       [reversion]
-              │
-              ├─► Confluence: ADX regime detection weights trend vs.
-              │   reversion styles; weighted score must clear min_score,
-              │   ≥ min_agree strategies must agree, and any high-confidence
-              │   opposite signal vetoes the trade.
-              │
-              ├─► RiskManager: fixed-fractional sizing (0.5%/trade, ATR stop),
-              │   daily −2% halt, +3% profit lock, 4-loss streak breaker,
-              │   ≤6 trades/day, London+NY session gate, 19:00 entry cutoff,
-              │   20:30 UTC forced flatten (never holds overnight).
-              │
-              └─► Broker: paper broker with spread/slippage/gap-aware fills
-                  (stop assumed to fill before target when a bar spans both;
-                  breakeven stop move at +1R). Real adapters implement
-                  broker/base.py without touching the layers above.
+ticks ─► BarAggregator ─► merged multi-symbol bar feed
+                              │
+                    PortfolioEngine (one shared account)
+                    │  · sizes every trade off total account equity
+                    │  · ≤ max_concurrent_positions across markets
+                    │  · Σ open initial risk ≤ max_total_open_risk_pct
+                    │  · thread-safe status() for the dashboard
+                    │
+        ┌───────────┼───────────┬───────────┐
+     Engine       Engine      Engine      Engine        (one per market)
+     XAUUSD       XAGUSD      WTIUSD      BTCUSD
+        │
+        ├─► shared indicators (ATR, ADX, session VWAP)
+        ├─► Strategies (direction −1/0/+1 + confidence)
+        │     trend family:      trend_ema · macd_momentum · donchian_breakout
+        │                        bos_choch (BOS/CHoCH, off by default)
+        │     reversion family:  rsi_reversion · vwap_deviation · liquidity_sweep
+        │
+        ├─► Confluence: ADX regime weighting + FAMILY-NORMALIZED scoring
+        │   (each strategy's weight is divided by its family size, so three
+        │   correlated trend voters can't stack the vote), min_score,
+        │   min_agree distinct strategies, high-confidence veto.
+        │
+        ├─► EMA 5/9 trigger: a timing FILTER on approved entries — never a voter.
+        │
+        ├─► RiskManager: 0.5%/trade ATR sizing, −2% daily halt, +3% profit
+        │   lock, 4-loss streak breaker, ≤6 trades/day, per-market session
+        │   gate + entry cutoff, forced end-of-day flatten (never overnight).
+        │
+        └─► Broker: paper broker, conservative fills (spread/slippage, gaps
+            fill at the worse of level/open, stop beats target in one bar,
+            breakeven move at +1R). Real adapters implement broker/base.py.
+
+server.py ─► GET /            responsive dashboard (any device with a browser)
+             GET /api/status  JSON snapshot (equity, positions, sessions, trades)
 ```
 
 ## Quick start
@@ -56,27 +78,42 @@ bars ──► Engine ──► shared indicators (ATR, ADX, session VWAP)
 ```bash
 cd algotrader
 
-# run the test suite
+# run the test suite (47 tests)
 python3 -m unittest discover -s tests -v
 
-# generate 60 weekdays of synthetic 5-min XAUUSD bars
+# 24x7 multi-market paper trading with the web dashboard
+python3 -m algotrader live                       # XAUUSD,XAGUSD,WTIUSD,BTCUSD
+python3 -m algotrader live --speed 0 --days 20   # instant replay, full report
+# then open http://<host>:8899/ from any phone/tablet/laptop on the network
+
+# single-market backtest over a CSV of bars
 python3 -m algotrader synth --out /tmp/xau.csv --days 60 --seed 42
-
-# backtest with default config, show per-day P&L and the trade log
 python3 -m algotrader backtest --data /tmp/xau.csv --daily --trades
-
-# custom config
-python3 -m algotrader backtest --data /tmp/xau.csv --config config/default.json
 ```
 
-Real data works the same way — export 5-minute XAUUSD OHLCV bars to CSV with
-the header `ts,open,high,low,close,volume` (ISO-8601 UTC timestamps).
+Real data works the same way — export 5-minute OHLCV bars to CSV with the
+header `ts,open,high,low,close,volume` (ISO-8601 UTC timestamps).
+
+## Markets
+
+Per-instrument specs live in `algotrader/instruments.py` (costs, lot steps,
+session calendars, synthetic parameters):
+
+| symbol | kind | entry sessions (UTC) | EOD flat | weekends |
+|---|---|---|---|---|
+| XAUUSD | metal | 01:00–19:30 | 20:30 | no |
+| XAGUSD | metal | 01:00–19:30 | 20:30 | no |
+| WTIUSD | energy | 03:00–19:30 | 20:15 | no |
+| BTCUSD | crypto | 00:00–23:59 | 23:45 | yes |
+
+The union of these calendars keeps the bot scanning essentially 24×7 —
+honestly, though: metals and energy are closed on weekends; only crypto
+genuinely trades seven days a week.
 
 ## Configuration
 
-Everything lives in `algotrader/config.py` (dataclass defaults) and can be
-overridden per-run with `--config file.json`; unknown keys are rejected.
-The knobs that matter most:
+Account-level defaults live in `algotrader/config.py`; override per run
+with `--config file.json` (unknown keys are rejected). Key knobs:
 
 | key | default | meaning |
 |---|---|---|
@@ -84,14 +121,19 @@ The knobs that matter most:
 | `sl_atr_mult` / `tp_r_multiple` | 1.5 / 2.0 | stop = 1.5·ATR, target = 2R |
 | `daily_loss_limit_pct` | 0.02 | −2% on the day → flatten + halt |
 | `daily_profit_lock_pct` | 0.03 | +3% on the day → flatten + bank it |
-| `max_consecutive_losses` | 4 | streak breaker (blocks new entries) |
-| `min_score` / `min_agree` | 0.9 / 2 | confluence thresholds |
-| `sessions` | 07:00–11:00, 12:30–19:30 UTC | London + New York liquidity |
-| `eod_flat` | 20:30 UTC | everything closed by here, every day |
+| `max_concurrent_positions` | 3 | across all markets |
+| `max_total_open_risk_pct` | 0.015 | Σ open initial risks / equity |
+| `min_score` / `min_agree` | 0.5 / 2 | confluence thresholds (family-normalized) |
+| `use_ema_trigger` | true | EMA 5/9 timing filter on entries |
+| `enable_liquidity_sweep` | true | stop-hunt fade voter (reversion family) |
+| `enable_bos_choch` | false | BOS/CHoCH voter — off until it earns a seat on real data |
 
 ## Going live (deliberately not included)
 
-`broker/base.py` defines the adapter interface — implement it against OANDA,
-MT5, or IBKR and the strategy/confluence/risk layers run unchanged. The
-recommended path: real historical data → walk-forward parameter validation →
-demo-account paper trading for weeks → only then small live size.
+`broker/base.py` defines the adapter interface — implement it against
+OANDA, MT5, or IBKR and everything above it runs unchanged; `feed.py`'s
+`Tick`/`BarAggregator` is the same story for a real price stream. The
+recommended path: real historical data → walk-forward parameter validation
+→ demo-account paper trading for weeks → only then small live size. Keep
+the dashboard as the monitoring surface; run the process on an always-on
+machine (a small VPS is ideal), not a phone.
