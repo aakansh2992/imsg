@@ -96,6 +96,10 @@ python3 -m algotrader web
 python3 -m algotrader live                       # XAUUSD,XAGUSD,WTIUSD,BTCUSD
 python3 -m algotrader live --speed 0 --days 20   # instant replay, full report
 
+# the honest tests: rolling train/test validation and per-voter ablation
+python3 -m algotrader walkforward --data bars.csv --train-days 30 --test-days 10
+python3 -m algotrader ablate --data bars.csv
+
 # single-market backtest over a CSV of bars
 python3 -m algotrader synth --out /tmp/xau.csv --days 60 --seed 42
 python3 -m algotrader backtest --data /tmp/xau.csv --daily --trades
@@ -137,6 +141,22 @@ with `--config file.json` (unknown keys are rejected). Key knobs:
 | `use_ema_trigger` | true | EMA 5/9 timing filter on entries |
 | `enable_liquidity_sweep` | true | stop-hunt fade voter (reversion family) |
 | `enable_bos_choch` | false | BOS/CHoCH voter — off until it earns a seat on real data |
+
+## Validation protocol
+
+`walkforward` optimizes a deliberately small parameter grid on each rolling
+training window, evaluates on the unseen window that follows, and stitches
+the out-of-sample results together. Trust only that stitched number, plus
+parameter stability across windows — in-sample P&L is not evidence. The
+verdict line applies the gate: positive out-of-sample P&L on a meaningful
+trade count, or "do not trade this." (On the bundled synthetic data it
+correctly reports that the edge does not survive — random walks have no
+edge, and detecting that is the tool working.)
+
+`ablate` re-runs the same data with each voter removed and reports the
+delta, answering "which strategies earn their seat?" — the mechanism for
+deciding whether `bos_choch` gets enabled and whether `liquidity_sweep`
+keeps its place, using real data.
 
 ## Going live (deliberately not included)
 

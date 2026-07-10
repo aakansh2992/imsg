@@ -9,6 +9,7 @@ from .config import Config
 from .data.bar import Bar
 from .engine import Engine
 from .metrics import Report, compute
+from .strategies.base import Strategy
 
 
 @dataclass
@@ -18,8 +19,12 @@ class BacktestResult:
     engine: Engine
 
 
-def run(cfg: Config, bars: Iterable[Bar]) -> BacktestResult:
-    engine = Engine(cfg)
+def run(
+    cfg: Config,
+    bars: Iterable[Bar],
+    strategies: list[Strategy] | None = None,
+) -> BacktestResult:
+    engine = Engine(cfg, strategies=strategies)
     last: Bar | None = None
     for bar in bars:
         engine.on_bar(bar)

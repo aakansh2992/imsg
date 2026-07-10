@@ -121,6 +121,58 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_walkforward(args: argparse.Namespace) -> int:
+    from .walkforward import run_walkforward
+
+    cfg = Config.from_json(args.config) if args.config else Config()
+    if args.equity is not None:
+        cfg.initial_equity = args.equity
+    bars = list(read_csv(args.data))
+    result = run_walkforward(cfg, bars, train_days=args.train_days,
+                             test_days=args.test_days)
+    if not result.windows:
+        print("not enough data for a single train+test window")
+        return 1
+    print("== Walk-forward validation ==")
+    print(f"windows: train {args.train_days}d / test {args.test_days}d\n")
+    print(f"{'win':>3}  {'params':<38}{'train P&L':>12}{'test P&L':>12}"
+          f"{'trades':>8}{'win%':>7}")
+    for w in result.windows:
+        params = ", ".join(f"{k}={v}" for k, v in sorted(w.params.items()))
+        print(f"{w.index:>3}  {params:<38}{w.train_pnl:>12,.2f}"
+              f"{w.test_pnl:>12,.2f}{w.test_trades:>8}{w.test_win_rate:>7.1f}")
+    print(f"\nstitched OUT-OF-SAMPLE: P&L {result.oos_pnl:+,.2f}"
+          f"  trades {result.oos_trades}  win rate {result.oos_win_rate:.1f}%"
+          f"  expectancy {result.oos_expectancy:+,.2f}/trade")
+    stable = result.param_counts.most_common(1)
+    if stable:
+        picks, count = stable[0]
+        print(f"param stability: most-chosen {dict(picks)} "
+              f"in {count}/{len(result.windows)} windows")
+    print("verdict:", "edge SURVIVES out-of-sample (still requires forward "
+          "paper trading before capital)" if result.survives
+          else "edge does NOT survive out-of-sample — do not trade this")
+    return 0
+
+
+def cmd_ablate(args: argparse.Namespace) -> int:
+    from .walkforward import run_ablation
+
+    cfg = Config.from_json(args.config) if args.config else Config()
+    if args.equity is not None:
+        cfg.initial_equity = args.equity
+    bars = list(read_csv(args.data))
+    rows = run_ablation(cfg, bars)
+    print("== Strategy ablation ==")
+    print("negative delta = the ensemble was worse without that voter\n")
+    print(f"{'removed voter':<22}{'net P&L':>12}{'trades':>8}{'delta':>12}")
+    for r in rows:
+        name = r.removed or "(baseline: all voters)"
+        print(f"{name:<22}{r.net_pnl:>12,.2f}{r.n_trades:>8}"
+              f"{r.delta_vs_baseline:>+12,.2f}")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     import threading
 
@@ -178,6 +230,22 @@ def main(argv: list[str] | None = None) -> int:
                                     "set capital, reports, trade list")
     pw.add_argument("--port", type=int, default=8899)
     pw.set_defaults(fn=cmd_web)
+
+    pf = sub.add_parser("walkforward",
+                        help="rolling train/test validation over a CSV of bars")
+    pf.add_argument("--data", required=True)
+    pf.add_argument("--train-days", type=int, default=30)
+    pf.add_argument("--test-days", type=int, default=10)
+    pf.add_argument("--config", help="JSON config overriding defaults")
+    pf.add_argument("--equity", type=float, help="override initial equity")
+    pf.set_defaults(fn=cmd_walkforward)
+
+    pa = sub.add_parser("ablate",
+                        help="measure each strategy's contribution by removing it")
+    pa.add_argument("--data", required=True)
+    pa.add_argument("--config", help="JSON config overriding defaults")
+    pa.add_argument("--equity", type=float, help="override initial equity")
+    pa.set_defaults(fn=cmd_ablate)
 
     args = p.parse_args(argv)
     return args.fn(args)
