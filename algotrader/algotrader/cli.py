@@ -121,6 +121,25 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    import threading
+
+    from .webapp import start_webapp
+
+    httpd = start_webapp(args.port)
+    port = httpd.server_address[1]
+    print(f"control panel: http://localhost:{port}/  (any device on this network)")
+    print("set capital/markets/mode in the browser, then Start. Ctrl-C to quit.")
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        print("\nshutting down")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="algotrader",
                                 description="Confluence-based intraday XAUUSD algo trader")
@@ -154,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--config", help="JSON config overriding defaults")
     pl.add_argument("--equity", type=float, help="override initial equity")
     pl.set_defaults(fn=cmd_live)
+
+    pw = sub.add_parser("web", help="browser control panel: run/stop sessions, "
+                                    "set capital, reports, trade list")
+    pw.add_argument("--port", type=int, default=8899)
+    pw.set_defaults(fn=cmd_web)
 
     args = p.parse_args(argv)
     return args.fn(args)

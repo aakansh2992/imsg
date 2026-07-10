@@ -69,8 +69,14 @@ ticks ─► BarAggregator ─► merged multi-symbol bar feed
             fill at the worse of level/open, stop beats target in one bar,
             breakeven move at +1R). Real adapters implement broker/base.py.
 
-server.py ─► GET /            responsive dashboard (any device with a browser)
+server.py ─► GET /            read-only live dashboard (used by `live`)
              GET /api/status  JSON snapshot (equity, positions, sessions, trades)
+
+webapp.py ─► `python -m algotrader web` — the full control panel:
+             set capital / markets / days / mode from the browser, Start/Stop
+             sessions, equity-curve chart with hover, per-market cards, final
+             report with daily P&L, live trade list, CSV download.
+             POST /api/run · POST /api/stop · GET /api/report · /api/trades.csv
 ```
 
 ## Quick start
@@ -78,13 +84,17 @@ server.py ─► GET /            responsive dashboard (any device with a browse
 ```bash
 cd algotrader
 
-# run the test suite (47 tests)
+# run the test suite (49 tests)
 python3 -m unittest discover -s tests -v
 
-# 24x7 multi-market paper trading with the web dashboard
+# browser control panel: set capital, pick markets, run backtests or paced
+# demo sessions, watch the equity curve, download reports and trades
+python3 -m algotrader web
+# then open http://<host>:8899/ from any phone/tablet/laptop on the network
+
+# same thing from the terminal instead of the browser
 python3 -m algotrader live                       # XAUUSD,XAGUSD,WTIUSD,BTCUSD
 python3 -m algotrader live --speed 0 --days 20   # instant replay, full report
-# then open http://<host>:8899/ from any phone/tablet/laptop on the network
 
 # single-market backtest over a CSV of bars
 python3 -m algotrader synth --out /tmp/xau.csv --days 60 --seed 42

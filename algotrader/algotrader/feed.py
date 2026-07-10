@@ -10,7 +10,7 @@ from __future__ import annotations
 import heapq
 import time as _time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator
 
 from .data.bar import Bar
@@ -93,26 +93,34 @@ def synthetic_feed(
 ) -> Iterator[tuple[str, Bar]]:
     """Multi-symbol synthetic feed, run through the tick→bar path.
 
-    ``speed`` scales simulated time to wall-clock: 300 plays a 5-minute bar
-    per second, 0 runs flat out (backtest-style). Crypto instruments include
-    weekends and skip the maintenance break, matching their real calendars.
+    ``days`` is one shared calendar window for every instrument (weekday-only
+    markets simply skip their closed days inside it), so all streams start
+    and end together. ``speed`` scales simulated time to wall-clock: 300
+    plays a 5-minute bar per second, 0 runs flat out (backtest-style).
+    Crypto instruments include weekends and skip the maintenance break,
+    matching their real calendars.
     """
     def _labeled(sym: str, bars: Iterable[Bar]) -> Iterator[tuple[datetime, str, Bar]]:
         for b in bars:
             yield b.ts, sym, b
 
+    window_start = start or datetime(2026, 1, 5, tzinfo=timezone.utc)  # a Monday
+    weekdays = sum(
+        1 for i in range(days) if (window_start + timedelta(days=i)).weekday() < 5
+    )
+
     streams: list[Iterator[tuple[datetime, str, Bar]]] = []
     for i, sym in enumerate(symbols):
         inst = REGISTRY[sym]
         bars = generate(
-            days=days,
+            days=days if inst.weekend else weekdays,
             tf_minutes=tf_minutes,
             seed=seed + i * 1009,
             start_price=inst.start_price,
             base_sigma=inst.base_sigma,
             include_weekends=inst.weekend,
             maintenance_break=inst.kind != "crypto",
-            start=start,
+            start=window_start,
         )
         streams.append(_labeled(sym, bars))
 

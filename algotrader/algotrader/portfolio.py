@@ -40,6 +40,7 @@ class PortfolioEngine:
         self._day: date | None = None
         self._day_start_equity = base_cfg.initial_equity
         self.max_concurrent_seen = 0
+        self.curve: list[tuple[datetime, float]] = []  # account equity per bar
 
         self.engines: dict[str, Engine] = {}
         for sym in symbols:
@@ -86,14 +87,19 @@ class PortfolioEngine:
 
     # -- event loop --------------------------------------------------------------
     def on_bar(self, symbol: str, bar: Bar) -> None:
+        # Bars from different markets can interleave slightly out of order
+        # around session gaps (the aggregator completes a bar only when the
+        # next tick arrives), so the day roll and sim clock only move forward.
         with self._lock:
             self._marks[symbol] = bar.close
-            self._sim_ts = bar.ts
-            if bar.ts.date() != self._day:
+            if self._sim_ts is None or bar.ts > self._sim_ts:
+                self._sim_ts = bar.ts
+            if self._day is None or bar.ts.date() > self._day:
                 self._day = bar.ts.date()
                 self._day_start_equity = self.equity()
             self.engines[symbol].on_bar(bar)
             self.max_concurrent_seen = max(self.max_concurrent_seen, self.open_positions())
+            self.curve.append((bar.ts, self.equity()))
 
     def finish(self, last_bars: dict[str, Bar] | None = None) -> None:
         """Close anything still open using each symbol's last seen price."""
@@ -110,6 +116,18 @@ class PortfolioEngine:
         return Bar(ts=self._sim_ts, open=mark, high=mark, low=mark, close=mark, volume=0.0)
 
     # -- reporting ---------------------------------------------------------------
+    def curve_snapshot(self, max_points: int = 600) -> list[tuple[float, float]]:
+        """Downsampled account equity curve as (epoch_seconds, equity)."""
+        with self._lock:
+            pts = sorted(self.curve, key=lambda p: p[0])
+        if len(pts) > max_points:
+            stride = len(pts) // max_points + 1
+            tail = pts[-1]
+            pts = pts[::stride]
+            if pts[-1] is not tail:
+                pts.append(tail)
+        return [(ts.timestamp(), round(eq, 2)) for ts, eq in pts]
+
     def all_trades(self) -> list[Trade]:
         trades: list[Trade] = []
         for e in self.engines.values():
@@ -165,7 +183,7 @@ class PortfolioEngine:
                     "reason": t.reason,
                     "exit_ts": t.exit_ts.isoformat(),
                 }
-                for t in self.all_trades()[-20:]
+                for t in self.all_trades()[-100:]
             ]
             return {
                 "sim_time": self._sim_ts.isoformat() if self._sim_ts else None,
