@@ -48,16 +48,35 @@ REGISTRY: dict[str, Instrument] = {
             sessions=(("03:00", "19:30"),), entry_cutoff="19:00", eod_flat="20:15",
             weekend=False,
         ),
-        Instrument(
-            symbol="BTCUSD", kind="crypto", start_price=105_000.0, base_sigma=2.5e-3,
-            spread=25.0, slippage=10.0, unit_step=0.001, max_units=5.0,
-            sessions=(("00:00", "23:59"),), entry_cutoff="23:00", eod_flat="23:45",
-            weekend=True,
-        ),
     ]
 }
 
+
+def _crypto(symbol: str, price: float, sigma: float, spread: float,
+            slippage: float, step: float, max_units: float) -> Instrument:
+    return Instrument(
+        symbol=symbol, kind="crypto", start_price=price, base_sigma=sigma,
+        spread=spread, slippage=slippage, unit_step=step, max_units=max_units,
+        sessions=(("00:00", "23:59"),), entry_cutoff="23:00", eod_flat="23:45",
+        weekend=True,
+    )
+
+
+# Majors with liquid USD(T) markets on Binance, Coinbase, and Kraken alike.
+for _inst in [
+    _crypto("BTCUSD", 105_000.0, 2.5e-3, 25.0, 10.0, 0.001, 5.0),
+    _crypto("ETHUSD", 5_200.0, 3e-3, 1.80, 0.80, 0.01, 100.0),
+    _crypto("SOLUSD", 220.0, 4e-3, 0.12, 0.05, 0.1, 2_000.0),
+    _crypto("XRPUSD", 2.80, 4e-3, 0.002, 0.001, 1.0, 150_000.0),
+    _crypto("DOGEUSD", 0.35, 4.5e-3, 0.0004, 0.0002, 10.0, 1_000_000.0),
+    _crypto("ADAUSD", 1.10, 4e-3, 0.001, 0.0005, 1.0, 400_000.0),
+    _crypto("LTCUSD", 130.0, 3.5e-3, 0.08, 0.04, 0.1, 3_000.0),
+    _crypto("LINKUSD", 25.0, 4e-3, 0.02, 0.01, 0.1, 15_000.0),
+]:
+    REGISTRY[_inst.symbol] = _inst
+
 DEFAULT_SYMBOLS = ["XAUUSD", "XAGUSD", "WTIUSD", "BTCUSD"]
+CRYPTO_SYMBOLS = [s for s, inst in REGISTRY.items() if inst.kind == "crypto"]
 
 
 def config_for(symbol: str, base: Config) -> Config:

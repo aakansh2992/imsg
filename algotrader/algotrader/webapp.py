@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import Config
 from .feed import synthetic_feed
-from .instruments import DEFAULT_SYMBOLS, REGISTRY
+from .instruments import CRYPTO_SYMBOLS, DEFAULT_SYMBOLS, REGISTRY
 from .metrics import Report
 from .portfolio import PortfolioEngine
 
@@ -32,27 +32,43 @@ IDLE, RUNNING, STOPPING, DONE, ERROR = "idle", "running", "stopping", "done", "e
 
 
 class SessionManager:
-    """Owns at most one paper session at a time, run in a daemon thread."""
+    """Owns at most one paper session at a time, run in a daemon thread.
 
-    def __init__(self) -> None:
+    ``crypto_feed_factory(symbols, portfolio)`` builds the live feed for the
+    real-market mode; injectable so tests never touch the network.
+    """
+
+    def __init__(self, crypto_feed_factory=None) -> None:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._crypto_feed_factory = crypto_feed_factory or self._default_crypto_feed
         self.state = IDLE
         self.error = ""
         self.params: dict = {}
         self.portfolio: PortfolioEngine | None = None
         self.report: Report | None = None
+        self.source_name = ""
+
+    @staticmethod
+    def _default_crypto_feed(symbols, portfolio):
+        from .data.live_crypto import LiveCryptoFeed
+
+        return LiveCryptoFeed(symbols, on_mark=portfolio.mark_price)
 
     # -- control -----------------------------------------------------------------
     def start(self, params: dict) -> str:
         """Validate and launch; returns an error message or ''."""
+        feed = str(params.get("feed", "synth"))
+        if feed not in ("synth", "crypto"):
+            return "feed must be 'synth' or 'crypto'"
         try:
             equity = float(params.get("equity", 100_000.0))
             days = int(params.get("days", 5))
             speed = float(params.get("speed", 300.0))
             seed = int(params.get("seed", 42))
-            symbols = list(params.get("symbols") or DEFAULT_SYMBOLS)
+            default_syms = CRYPTO_SYMBOLS if feed == "crypto" else DEFAULT_SYMBOLS
+            symbols = list(params.get("symbols") or default_syms)
         except (TypeError, ValueError) as e:
             return f"bad parameters: {e}"
         if equity <= 0:
@@ -64,6 +80,10 @@ class SessionManager:
         unknown = [s for s in symbols if s not in REGISTRY]
         if unknown:
             return f"unknown symbols: {unknown}"
+        if feed == "crypto":
+            symbols = [s for s in symbols if REGISTRY[s].kind == "crypto"]
+            if not symbols:
+                return "live crypto mode needs at least one crypto market"
         if not symbols:
             return "pick at least one market"
 
@@ -72,10 +92,11 @@ class SessionManager:
                 return "a session is already running"
             cfg = Config(initial_equity=equity)
             self.portfolio = PortfolioEngine(cfg, symbols)
-            self.params = {"equity": equity, "days": days, "speed": speed,
-                           "seed": seed, "symbols": symbols}
+            self.params = {"feed": feed, "equity": equity, "days": days,
+                           "speed": speed, "seed": seed, "symbols": symbols}
             self.report = None
             self.error = ""
+            self.source_name = ""
             self.state = RUNNING
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, daemon=True)
@@ -92,9 +113,16 @@ class SessionManager:
         pf = self.portfolio
         p = self.params
         try:
-            feed = synthetic_feed(p["symbols"], days=p["days"], seed=p["seed"],
-                                  speed=p["speed"])
-            for sym, bar in feed:
+            if p["feed"] == "crypto":
+                feed = self._crypto_feed_factory(p["symbols"], pf)
+                self.source_name = getattr(getattr(feed, "source", None),
+                                           "name", "live")
+                pf.warmup(feed.warmup_bars(300))
+                stream = feed.stream(self._stop)
+            else:
+                stream = synthetic_feed(p["symbols"], days=p["days"],
+                                        seed=p["seed"], speed=p["speed"])
+            for sym, bar in stream:
                 if self._stop.is_set():
                     break
                 pf.on_bar(sym, bar)
@@ -112,7 +140,9 @@ class SessionManager:
         with self._lock:
             state, error, params = self.state, self.error, dict(self.params)
             pf, report = self.portfolio, self.report
-        out: dict = {"state": state, "error": error, "params": params}
+            source = self.source_name
+        out: dict = {"state": state, "error": error, "params": params,
+                     "feed": params.get("feed", "synth"), "source": source}
         if pf is not None:
             out.update(pf.status())
             out["initial_equity"] = pf.base_cfg.initial_equity
@@ -143,8 +173,16 @@ class SessionManager:
         return buf.getvalue()
 
 
+def _render_panel() -> str:
+    return (PANEL_HTML
+            .replace("__SYMBOLS__", json.dumps(sorted(REGISTRY)))
+            .replace("__CRYPTO__", json.dumps(CRYPTO_SYMBOLS))
+            .replace("__CHECKED__", json.dumps(DEFAULT_SYMBOLS)))
+
+
 def start_webapp(port: int, manager: SessionManager | None = None) -> ThreadingHTTPServer:
     mgr = manager or SessionManager()
+    panel = _render_panel().encode()
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, body: bytes, ctype: str, status: int = 200,
@@ -162,7 +200,16 @@ def start_webapp(port: int, manager: SessionManager | None = None) -> ThreadingH
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path in ("/", "/index.html"):
-                self._send(PANEL_HTML.encode(), "text/html; charset=utf-8")
+                self._send(panel, "text/html; charset=utf-8")
+            elif self.path == "/manifest.webmanifest":
+                self._send(MANIFEST.encode(), "application/manifest+json")
+            elif self.path == "/sw.js":
+                self._send(SERVICE_WORKER.encode(), "text/javascript")
+            elif self.path in ("/icon-180.png", "/icon-192.png", "/icon-512.png"):
+                from .webicons import make_icon_png
+
+                size = int(self.path.split("-")[1].split(".")[0])
+                self._send(make_icon_png(size), "image/png")
             elif self.path.startswith("/api/status"):
                 self._json(mgr.status())
             elif self.path.startswith("/api/report"):
@@ -205,6 +252,28 @@ def start_webapp(port: int, manager: SessionManager | None = None) -> ThreadingH
     return httpd
 
 
+MANIFEST = json.dumps({
+    "name": "algotrader",
+    "short_name": "algotrader",
+    "description": "paper-trading control panel",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0d0d0d",
+    "theme_color": "#1a1a19",
+    "icons": [
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    ],
+})
+
+SERVICE_WORKER = """\
+// Minimal service worker: enables PWA install; no offline caching —
+// a trading panel must never show stale data as if it were live.
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('fetch', () => {});
+"""
+
+
 # ---------------------------------------------------------------------------
 # Front end. Design tokens follow the validated reference dataviz palette:
 # single-series line in categorical blue, status text reserved for P&L signs,
@@ -215,6 +284,12 @@ PANEL_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a1a19">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="algotrader">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png" type="image/png">
 <title>algotrader control panel</title>
 <style>
   :root { color-scheme: light dark;
@@ -284,7 +359,7 @@ PANEL_HTML = """<!doctype html>
 </head>
 <body>
 <h1>algotrader</h1><span class="badge" id="state">connecting…</span>
-<span class="badge">synthetic demo feed</span>
+<span class="badge" id="feedbadge">paper trading</span>
 <div class="sub">paper trading control panel — no real orders, no edge claims;
 results on synthetic data validate machinery only</div>
 
@@ -297,6 +372,7 @@ results on synthetic data validate machinery only</div>
       <input id="days" type="number" value="5" min="1" max="365"></div>
     <div><label for="speed">mode / speed</label>
       <select id="speed">
+        <option value="crypto">LIVE crypto (real market)</option>
         <option value="0">backtest (instant)</option>
         <option value="60">demo ×60</option>
         <option value="300" selected>demo ×300</option>
@@ -340,7 +416,9 @@ results on synthetic data validate machinery only</div>
 <div id="tip"></div>
 
 <script>
-const SYMBOLS = ["XAUUSD","XAGUSD","WTIUSD","BTCUSD"];
+const SYMBOLS = __SYMBOLS__;
+const CRYPTO = __CRYPTO__;
+const CHECKED = __CHECKED__;
 const $ = id => document.getElementById(id);
 const fmt = (x, d=2) => x == null ? "—" :
   Number(x).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -348,18 +426,31 @@ const cls = x => x > 0 ? "good" : x < 0 ? "bad" : "";
 const sign = x => (x > 0 ? "+" : "") + fmt(x);
 
 $("syms").innerHTML = SYMBOLS.map(s =>
-  `<label><input type="checkbox" value="${s}" checked>${s}</label>`).join("");
+  `<label><input type="checkbox" value="${s}" ${CHECKED.includes(s)?"checked":""}>${s}</label>`).join("");
+
+function liveMode() { return $("speed").value === "crypto"; }
+$("speed").onchange = () => {
+  const live = liveMode();
+  $("days").disabled = live; $("seed").disabled = live;
+  document.querySelectorAll("#syms input").forEach(c => {
+    if (live) { c.checked = CRYPTO.includes(c.value); c.disabled = !CRYPTO.includes(c.value); }
+    else c.disabled = false;
+  });
+};
 
 $("start").onclick = async () => {
   $("err").textContent = "";
   const symbols = [...document.querySelectorAll("#syms input:checked")].map(c => c.value);
-  const body = { equity:+$("equity").value, days:+$("days").value,
-                 speed:+$("speed").value, seed:+$("seed").value, symbols };
+  const body = liveMode()
+    ? { feed:"crypto", equity:+$("equity").value, symbols }
+    : { feed:"synth", equity:+$("equity").value, days:+$("days").value,
+        speed:+$("speed").value, seed:+$("seed").value, symbols };
   const r = await fetch("/api/run", {method:"POST", body: JSON.stringify(body)});
   const j = await r.json();
   if (j.error) $("err").textContent = j.error;
 };
 $("stop").onclick = () => fetch("/api/stop", {method:"POST", body:"{}"});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
 
 let curve = [], initial = 0;
 
@@ -501,9 +592,13 @@ async function poll() {
   try {
     const s = await (await fetch("/api/status")).json();
     const st = $("state");
-    st.textContent = s.state + (s.error ? ": " + s.error : "");
+    const live = s.feed === "crypto" && s.state === "running";
+    st.textContent = (live ? "LIVE (" + (s.source || "market") + ") " : "")
+      + s.state + (s.error ? ": " + s.error : "");
     st.className = "badge " + (s.state === "running" ? "running" :
                                s.state === "error" ? "error" : "");
+    $("feedbadge").textContent = s.feed === "crypto"
+      ? "real market data · paper orders" : "synthetic demo feed";
     $("start").disabled = s.state === "running" || s.state === "stopping";
     $("stop").disabled = !(s.state === "running");
     if (s.equity != null) tiles(s);

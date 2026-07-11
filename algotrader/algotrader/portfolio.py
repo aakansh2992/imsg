@@ -86,6 +86,33 @@ class PortfolioEngine:
         return total / eq <= self.base_cfg.max_total_open_risk_pct
 
     # -- event loop --------------------------------------------------------------
+    def warmup(self, history: dict[str, list[Bar]]) -> None:
+        """Replay recent history so indicators are warm before live trading.
+
+        No orders are placed and nothing is recorded to the equity curve —
+        the engines just learn the market's current shape.
+        """
+        with self._lock:
+            for sym, bars in history.items():
+                engine = self.engines.get(sym)
+                if engine is None:
+                    continue
+                engine.trading = False
+                engine.record = False
+                for bar in bars:
+                    engine.on_bar(bar)
+                    self._marks[sym] = bar.close
+                engine.trading = True
+                engine.record = True
+            self._day = None  # the first live bar re-baselines the trading day
+
+    def mark_price(self, symbol: str, price: float, ts: datetime) -> None:
+        """Live ticker update between bars — display only, no engine call."""
+        with self._lock:
+            self._marks[symbol] = price
+            if self._sim_ts is None or ts > self._sim_ts:
+                self._sim_ts = ts
+
     def on_bar(self, symbol: str, bar: Bar) -> None:
         # Bars from different markets can interleave slightly out of order
         # around session gaps (the aggregator completes a bar only when the

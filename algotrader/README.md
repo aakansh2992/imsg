@@ -91,6 +91,17 @@ python3 -m unittest discover -s tests -v
 # demo sessions, watch the equity curve, download reports and trades
 python3 -m algotrader web
 # then open http://<host>:8899/ from any phone/tablet/laptop on the network
+#
+# LIVE crypto paper trading on real market prices (works on weekends):
+# pick "LIVE crypto (real market)" in the mode selector and press Start.
+# Data comes from public exchange APIs (Binance -> Coinbase -> Kraken
+# fallback, no account or API key needed): BTC, ETH, SOL, XRP, DOGE,
+# ADA, LTC, LINK. Orders remain 100% simulated (paper).
+#
+# Install as an app (Windows / iOS / Android): open the panel in the
+# browser and use "Install app" / "Add to Home Screen" - it's a PWA
+# with its own icon and full-screen window. The bot itself keeps
+# running on the machine that launched `web`; devices are live viewers.
 
 # same thing from the terminal instead of the browser
 python3 -m algotrader live                       # XAUUSD,XAGUSD,WTIUSD,BTCUSD
@@ -118,11 +129,13 @@ session calendars, synthetic parameters):
 | XAUUSD | metal | 01:00–19:30 | 20:30 | no |
 | XAGUSD | metal | 01:00–19:30 | 20:30 | no |
 | WTIUSD | energy | 03:00–19:30 | 20:15 | no |
-| BTCUSD | crypto | 00:00–23:59 | 23:45 | yes |
+| BTC, ETH, SOL, XRP, DOGE, ADA, LTC, LINK (…USD) | crypto | 00:00–23:59 | 23:45 | yes |
 
 The union of these calendars keeps the bot scanning essentially 24×7 —
 honestly, though: metals and energy are closed on weekends; only crypto
-genuinely trades seven days a week.
+genuinely trades seven days a week. The crypto set is exactly the majors
+carried by all three public data sources (`data/live_crypto.py`), so the
+live feed works no matter which exchange answers.
 
 ## Configuration
 

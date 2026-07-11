@@ -52,6 +52,10 @@ class Engine:
         self._entry_gate = entry_gate or (lambda symbol, risk_usd: True)
         self._ema_fast = EMA(cfg.ema_trigger_fast)
         self._ema_slow = EMA(cfg.ema_trigger_slow)
+        # Warmup replay sets trading=False (indicators learn, no orders) and
+        # record=False (history must not pollute the equity curve).
+        self.trading = True
+        self.record = True
         self.equity_curve: list[tuple] = []  # (ts, equity)
         self.decisions: list[tuple] = []     # (ts, Decision) for entries taken
 
@@ -83,11 +87,11 @@ class Engine:
         if flatten:
             if self.broker.position is not None:
                 self._close(bar, flatten)
-            self.equity_curve.append((bar.ts, self._equity(bar.close)))
+            self._record(bar)
             return
 
         if not ctx.ready:
-            self.equity_curve.append((bar.ts, self._equity(bar.close)))
+            self._record(bar)
             return
 
         decision: Decision = self.confluence.decide(signals, ctx.adx)
@@ -112,7 +116,8 @@ class Engine:
         # 7. entry — confluence approved, risk gates open, EMA 5/9 timing
         #    trigger aligned (a filter on approved entries, never a voter),
         #    and the portfolio-level gate (concurrency / total open risk) ok
-        if pos is None and decision.direction != 0 and self.risk.can_open(bar.ts):
+        if (pos is None and self.trading and decision.direction != 0
+                and self.risk.can_open(bar.ts)):
             if self._trigger_aligned(decision.direction):
                 units = self.risk.size(self._equity(bar.close), ctx.atr)
                 dist = self.risk.stop_distance(ctx.atr)
@@ -123,7 +128,11 @@ class Engine:
                     self.risk.on_trade_opened()
                     self.decisions.append((bar.ts, decision))
 
-        self.equity_curve.append((bar.ts, self._equity(bar.close)))
+        self._record(bar)
+
+    def _record(self, bar: Bar) -> None:
+        if self.record:
+            self.equity_curve.append((bar.ts, self._equity(bar.close)))
 
     def _trigger_aligned(self, direction: int) -> bool:
         if not self.cfg.use_ema_trigger:

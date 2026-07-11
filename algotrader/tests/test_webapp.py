@@ -93,6 +93,56 @@ class TestWebApp(unittest.TestCase):
         s = self._wait_done()
         self.assertEqual(s["initial_equity"], 50_000)
 
+    def test_pwa_assets_served(self):
+        code, manifest = get(self.port, "/manifest.webmanifest")
+        self.assertEqual(code, 200)
+        m = json.loads(manifest)
+        self.assertEqual(m["display"], "standalone")
+        code, icon = get(self.port, "/icon-192.png")
+        self.assertEqual(code, 200)
+        self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n", "must be a real PNG")
+        code, sw = get(self.port, "/sw.js")
+        self.assertEqual(code, 200)
+        self.assertIn(b"service worker", sw.lower())
+
+    def test_live_crypto_mode_with_injected_feed(self):
+        import threading
+        from algotrader.data.synthetic import generate
+
+        class FakeFeed:
+            def __init__(self, symbols, portfolio):
+                self.source = type("S", (), {"name": "fake-exchange"})()
+                self._pf = portfolio
+                bars = list(generate(days=4, seed=9, include_weekends=True,
+                                     maintenance_break=False,
+                                     start_price=105_000.0))
+                self._history, self._live = bars[:600], bars[600:900]
+
+            def warmup_bars(self, limit=300):
+                return {"BTCUSD": self._history}
+
+            def stream(self, stop: threading.Event):
+                for bar in self._live:
+                    if stop.is_set():
+                        return
+                    yield "BTCUSD", bar
+
+        mgr = SessionManager(crypto_feed_factory=lambda syms, pf: FakeFeed(syms, pf))
+        err = mgr.start({"feed": "crypto", "equity": 75_000,
+                         "symbols": ["BTCUSD", "XAUUSD"]})  # XAUUSD filtered out
+        self.assertEqual(err, "")
+        deadline = time.time() + 60
+        while mgr.state not in ("done", "error") and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(mgr.state, "done", mgr.error)
+        s = mgr.status()
+        self.assertEqual(s["feed"], "crypto")
+        self.assertEqual(s["source"], "fake-exchange")
+        self.assertEqual(list(s["symbols"]), ["BTCUSD"])
+        self.assertEqual(s["initial_equity"], 75_000)
+        # equity curve covers only the live segment, not the warmup history
+        self.assertLessEqual(len(mgr.portfolio.curve), 300)
+
     def test_stop_interrupts_a_paced_session(self):
         mgr = SessionManager()
         err = mgr.start({"equity": 100_000, "days": 30, "speed": 5,  # very slow
