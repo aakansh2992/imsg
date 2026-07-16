@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantum-engine"
+version = "0.1.0"
+description = "An honest algorithmic trading research framework for XAUUSD (gold)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Quantum Engine contributors" }]
+keywords = ["trading", "backtesting", "xauusd", "gold", "algorithmic-trading", "research"]
+dependencies = []  # core has ZERO required deps
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6.0"]
+mt5 = ["MetaTrader5>=5.0; platform_system == 'Windows'"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+quantum-engine = "quantum_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quantum_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
