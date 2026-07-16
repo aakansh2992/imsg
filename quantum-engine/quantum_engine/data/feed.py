@@ -15,6 +15,8 @@ from typing import Iterator, Optional
 
 from ..types import Bar
 
+__all__ = ["CSVBarFeed", "SyntheticBarFeed", "write_bars_csv", "write_synthetic_csv"]
+
 
 class CSVBarFeed:
     """Reads bars from a CSV with columns:
@@ -91,6 +93,20 @@ class SyntheticBarFeed:
                       close=new_price, volume=volume)
             price = new_price
             t = t + timedelta(minutes=1)
+
+
+def write_bars_csv(path: str, bars) -> int:
+    """Write an iterable of Bars to the standard OHLCV CSV format."""
+    count = 0
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+        for bar in bars:
+            writer.writerow([bar.timestamp.isoformat(), f"{bar.open:.3f}",
+                             f"{bar.high:.3f}", f"{bar.low:.3f}",
+                             f"{bar.close:.3f}", f"{bar.volume:.1f}"])
+            count += 1
+    return count
 
 
 def write_synthetic_csv(path: str, **kwargs) -> int:

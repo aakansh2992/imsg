@@ -49,7 +49,10 @@ quantum_engine/
 │   ├── simulated.py         Paper broker with spread/slippage/commission (default)
 │   └── mt5.py               MetaTrader 5 live adapter (optional, gated)
 ├── data/
-│   └── feed.py              CSV feed + synthetic data generator
+│   ├── feed.py              CSV feed + synthetic data generator
+│   ├── http.py              Stdlib HTTP helper (retries/backoff, no deps)
+│   ├── providers.py         REAL data: Yahoo / Stooq / Twelve Data / MT5
+│   └── ticker.py            Live quote polling + tick→bar aggregation
 └── engine/
     ├── backtester.py        Event-driven backtester + metrics
     └── live.py              Live/paper trading loop (same logic as backtest)
@@ -92,6 +95,67 @@ Run the tests:
 pip install pytest
 PYTHONPATH=. python -m pytest -q
 ```
+
+## Running it for real on your own machine
+
+The engine does real computation on real market data — locally, no cloud. The
+core needs only Python's standard library (no `pip install`). To get real gold
+prices in and out:
+
+### 1. Download real historical bars
+
+```bash
+# Keyless — Yahoo, using GC=F (COMEX gold futures) as the XAUUSD proxy:
+PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider yahoo --symbol XAUUSD --interval 1m --lookback 5d --out gold_1m.csv
+
+# Keyless daily spot XAUUSD from Stooq:
+PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider stooq --symbol XAUUSD --interval 1d --lookback max --out gold_d.csv
+
+# Real spot XAU/USD intraday (free API key from twelvedata.com):
+TWELVEDATA_API_KEY=your_key PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider twelvedata --symbol XAUUSD --interval 1m --lookback 5d --out gold_1m.csv
+
+# Then backtest on that REAL data:
+PYTHONPATH=. python -m quantum_engine.cli backtest --data gold_1m.csv
+```
+
+### 2. Live ticker → paper trading
+
+Polls a live quote endpoint, aggregates ticks into bars, and feeds them to the
+engine in real time — trading through the paper broker (no real money):
+
+```bash
+# Keyless (Yahoo, ~10-15 min delayed):
+PYTHONPATH=. python -m quantum_engine.cli live --provider yahoo --symbol XAUUSD \
+    --timeframe 60 --poll 5
+
+# Real-time spot via Twelve Data (respect the free tier's rate limit):
+TWELVEDATA_API_KEY=your_key PYTHONPATH=. python -m quantum_engine.cli live \
+    --provider twelvedata --symbol XAUUSD --timeframe 60 --poll 10
+
+# Or the scripted example:
+PYTHONPATH=. python examples/run_live_paper.py            # yahoo
+TWELVEDATA_API_KEY=xxx python examples/run_live_paper.py twelvedata
+```
+
+### Data providers at a glance
+
+| Provider     | Key?    | Symbol used            | Intraday | Live quote | Notes                              |
+|--------------|---------|------------------------|----------|------------|------------------------------------|
+| `yahoo`      | no      | `GC=F` (gold futures)  | yes      | ~delayed   | Easiest start, no signup           |
+| `stooq`      | no      | `xauusd` (spot)        | daily    | no         | Great for long daily history       |
+| `twelvedata` | free    | `XAU/USD` (spot)       | yes      | real-time  | Best for live; ~8 req/min free     |
+| `mt5`        | broker  | broker `XAUUSD`        | yes      | real-time  | Truest data; Windows + MT5 terminal|
+
+Live real-time spot XAUUSD and live *execution* both require credentials — the
+keyless providers are delayed and/or futures proxies. That's a property of the
+market-data business, not a limitation of this engine.
+
+> **On the name:** "Quantum Engine" is a product name. This is real quantitative
+> computation on real data — not a quantum computer, and not magic. No provider
+> or strategy here promises profit.
 
 ## The SniperScalper strategy
 
