@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laptop-tuneup"
+version = "0.1.0"
+description = "Honest laptop scan/optimize/battery-care toolkit for Windows with optional Claude AI analysis."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []  # core is stdlib-only
+
+[project.optional-dependencies]
+ai = ["anthropic>=0.40"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+tuneup = "tuneup.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tuneup*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

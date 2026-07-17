@@ -1,0 +1,40 @@
+# Quantum Engine example configuration.
+# Copy to config.yaml and edit. All values shown are the built-in defaults,
+# so an empty config is perfectly valid.
+
+symbol: XAUUSD
+starting_equity: 10000.0
+
+# Broker backend: "simulated" (paper, default) or "mt5" (live, Windows only).
+broker: simulated
+
+# HARD SAFETY GATE. Must be true AND broker=mt5 to touch real money.
+# Leave false. Start on a demo account. You can lose everything.
+allow_live: false
+
+# Simulated broker frictions (kept conservative on purpose).
+spread: 0.20            # USD between bid and ask
+slippage: 0.05          # extra adverse fill, USD
+commission_per_lot: 0.0
+
+strategy:
+  fast_ema: 9
+  slow_ema: 21
+  rsi_period: 14
+  rsi_pullback_long: 45.0
+  rsi_pullback_short: 55.0
+  atr_period: 14
+  vwap_window: 20
+  min_atr: 0.10
+  max_atr: 5.00
+  stop_atr_mult: 1.2
+  target_atr_mult: 1.8
+
+risk:
+  risk_per_trade: 0.01    # risk 1% of equity per trade
+  daily_loss_limit: 0.05  # stop for the day after -5%
+  max_drawdown: 0.20      # hard stop after -20% from peak equity
+  max_position_lots: 10.0
+  min_position_lots: 0.01
+  lot_step: 0.01
+  contract_size: 100.0    # XAUUSD: 100 oz per 1.0 lot

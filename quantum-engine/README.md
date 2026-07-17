@@ -1,0 +1,303 @@
+# Quantum Engine
+
+An **honest** algorithmic trading research framework for gold (XAUUSD). Pure
+Python, zero required dependencies, broker-agnostic, paper-trading by default.
+
+> This project was requested as a bot that would "double capital every day and
+> always end the day in profit." **That is not possible — for anyone, with any
+> engine.** This README explains why, up front, and then gives you a genuinely
+> useful framework that doesn't lie to you.
+
+---
+
+## Read this before anything else
+
+**No strategy can guarantee daily profit, let alone doubling capital daily.**
+
+- Doubling $1,000 every trading day is ~$1M in 10 days and larger than the
+  entire gold market within a month. The market cannot fill those orders. The
+  math refutes the premise.
+- "Always green by end of day" is impossible. XAUUSD gaps and spikes on news
+  (CPI, FOMC, geopolitics). Any system that appears never to lose is either
+  curve-fit to the past or is silently taking unbounded risk that eventually
+  blows up the account on a single tick.
+- Every product marketed as a "sniper scalper that doubles daily" is a scam.
+  This framework is deliberately **not** marketed that way.
+
+What good algorithmic trading actually looks like: a defined edge, ruthless
+risk control, honest backtesting with realistic costs, walk-forward validation,
+and the humility to expect losing days. That is what this repo gives you.
+Trading leveraged gold can lose you more than you deposit. **You are
+responsible for your own money.** See [LICENSE](LICENSE) — no warranty.
+
+---
+
+## What's in the box
+
+```
+quantum_engine/
+├── types.py                 Domain types (Bar, Order, Position, Signal, ...)
+├── config.py                Optional YAML config (built-in fallback parser)
+├── cli.py                   `backtest`, `paper`, `gen-data` commands
+├── strategy/
+│   ├── indicators.py        Streaming EMA / SMA / RSI / ATR / RollingVWAP
+│   └── sniper_scalper.py    Confluence scalping strategy (trend+momentum+regime)
+├── risk/
+│   └── manager.py           Position sizing, daily loss limit, drawdown kill-switch
+├── brokers/
+│   ├── base.py              BrokerAdapter interface — implement for ANY broker
+│   ├── simulated.py         Paper broker with spread/slippage/commission (default)
+│   └── mt5.py               MetaTrader 5 live adapter (optional, gated)
+├── data/
+│   ├── feed.py              CSV feed + synthetic data generator
+│   ├── http.py              Stdlib HTTP helper (retries/backoff, no deps)
+│   ├── providers.py         REAL data: Yahoo / Stooq / Twelve Data / MT5
+│   └── ticker.py            Live quote polling + tick→bar aggregation
+└── engine/
+    ├── backtester.py        Event-driven backtester + metrics
+    └── live.py              Live/paper trading loop (same logic as backtest)
+```
+
+The strategy, risk manager, and broker objects are **shared** between the
+backtester and the live loop, so a passing backtest exercises the real
+execution code path — not a separate toy.
+
+## Quick start
+
+No installation needed for the core (standard library only):
+
+```bash
+cd quantum-engine
+
+# Run the full pipeline on synthetic data (proves plumbing, NOT profitability)
+PYTHONPATH=. python -m quantum_engine.cli backtest --synthetic 5000
+
+# Generate a synthetic CSV you can inspect
+PYTHONPATH=. python -m quantum_engine.cli gen-data --out sample.csv --bars 5000
+
+# Backtest on your own real OHLCV data
+PYTHONPATH=. python -m quantum_engine.cli backtest --data your_xauusd_1m.csv
+
+# Paper-trade the same logic through the simulated broker
+PYTHONPATH=. python -m quantum_engine.cli paper --synthetic 3000
+```
+
+CSV format expected by `--data`:
+
+```
+timestamp,open,high,low,close,volume
+2024-01-02T13:30:00,2062.10,2062.80,2061.90,2062.40,1234
+```
+
+Run the tests:
+
+```bash
+pip install pytest
+PYTHONPATH=. python -m pytest -q
+```
+
+## Getting it onto your machine (and automatic F:\ backups)
+
+Clone the branch straight onto your drive (Windows example):
+
+```bat
+git clone -b claude/quantum-engine-algo-trader-x7pxs2 https://github.com/aakansh2992/imsg.git F:\QuantumEngine
+cd F:\QuantumEngine\quantum-engine
+```
+
+The `quantum-engine` folder is fully self-contained (standard library only), so
+you can also copy it anywhere and make it its own repository:
+
+```bat
+robocopy F:\QuantumEngine\quantum-engine F:\QuantumEngineApp /E
+cd F:\QuantumEngineApp
+git init & git add -A & git commit -m "import quantum-engine"
+```
+
+### Back up every update to F:\ automatically (Windows)
+
+One-time setup — installs a git post-commit hook:
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\install-backup-hook.ps1
+```
+
+After that, **every `git commit` writes a backup** to
+`F:\QuantumEngineBackups\<timestamp>_<sha>\` containing a browsable copy of the
+project plus `repo.bundle` (the full git history in one file — restore with
+`git clone repo.bundle restored`). The hook never blocks a commit; if the drive
+or PowerShell is missing it warns and moves on.
+
+Manual backup any time, and useful options:
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\backup.ps1
+powershell -ExecutionPolicy Bypass -File scripts\backup.ps1 -BackupRoot "D:\Backups" -Keep 30
+```
+
+Set `QE_BACKUP_ROOT` once in your environment to change the default destination.
+
+## Running it for real on your own machine
+
+The engine does real computation on real market data — locally, no cloud. The
+core needs only Python's standard library (no `pip install`). To get real gold
+prices in and out:
+
+### 1. Download real historical bars
+
+```bash
+# Keyless — Yahoo, using GC=F (COMEX gold futures) as the XAUUSD proxy:
+PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider yahoo --symbol XAUUSD --interval 1m --lookback 5d --out gold_1m.csv
+
+# Keyless daily spot XAUUSD from Stooq:
+PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider stooq --symbol XAUUSD --interval 1d --lookback max --out gold_d.csv
+
+# Real spot XAU/USD intraday (free API key from twelvedata.com):
+TWELVEDATA_API_KEY=your_key PYTHONPATH=. python -m quantum_engine.cli fetch \
+    --provider twelvedata --symbol XAUUSD --interval 1m --lookback 5d --out gold_1m.csv
+
+# Then backtest on that REAL data:
+PYTHONPATH=. python -m quantum_engine.cli backtest --data gold_1m.csv
+```
+
+### 2. Live ticker → paper trading
+
+Polls a live quote endpoint, aggregates ticks into bars, and feeds them to the
+engine in real time — trading through the paper broker (no real money):
+
+```bash
+# Keyless (Yahoo, ~10-15 min delayed):
+PYTHONPATH=. python -m quantum_engine.cli live --provider yahoo --symbol XAUUSD \
+    --timeframe 60 --poll 5
+
+# Real-time spot via Twelve Data (respect the free tier's rate limit):
+TWELVEDATA_API_KEY=your_key PYTHONPATH=. python -m quantum_engine.cli live \
+    --provider twelvedata --symbol XAUUSD --timeframe 60 --poll 10
+
+# Or the scripted example:
+PYTHONPATH=. python examples/run_live_paper.py            # yahoo
+TWELVEDATA_API_KEY=xxx python examples/run_live_paper.py twelvedata
+```
+
+### Data providers at a glance
+
+| Provider     | Key?    | Symbol used            | Intraday | Live quote | Notes                              |
+|--------------|---------|------------------------|----------|------------|------------------------------------|
+| `yahoo`      | no      | `GC=F` (gold futures)  | yes      | ~delayed   | Easiest start, no signup           |
+| `stooq`      | no      | `xauusd` (spot)        | daily    | no         | Great for long daily history       |
+| `twelvedata` | free    | `XAU/USD` (spot)       | yes      | real-time  | Best for live; ~8 req/min free     |
+| `mt5`        | broker  | broker `XAUUSD`        | yes      | real-time  | Truest data; Windows + MT5 terminal|
+
+Live real-time spot XAUUSD and live *execution* both require credentials — the
+keyless providers are delayed and/or futures proxies. That's a property of the
+market-data business, not a limitation of this engine.
+
+> **On the name:** "Quantum Engine" is a product name. This is real quantitative
+> computation on real data — not a quantum computer, and not magic. No provider
+> or strategy here promises profit.
+
+## The 5-market portfolio bot (whiteboard build)
+
+Implements the multi-market design from the uploaded whiteboard, feature for
+feature:
+
+| Whiteboard claim | Implementation |
+|---|---|
+| Trades S&P 500, NASDAQ, Bitcoin, Gold, Oil | `engine/portfolio.py` — `default_markets()` (SPY/QQQ/BTC-USD/GC=F/CL=F via Yahoo, keyless) |
+| S&P + NASDAQ: mean reversion on 15-min candles | `strategy/mean_reversion.py` — z-score stretch beyond 2σ, snapback target at the rolling mean |
+| Bitcoin: momentum breakouts on the 1-hour chart, "heavy volume behind it" | `strategy/momentum_breakout.py` — N-bar key level break confirmed by ≥1.5× average volume, 2R target |
+| Gold + Oil: slower trend following on the 4-hour chart | `strategy/trend_following.py` — dual-EMA trend, enter on flip, exit on opposite flip |
+| "Every trade has a hard 1% stop loss" | `PortfolioEngine._stop_for` — stop distance = min(1.5×ATR, **1% of entry**); strategies may tighten it, never widen it |
+| "Position size adjusts based on market volatility" | fixed-fractional sizing against the ATR-derived stop: higher vol → wider (capped) stop → smaller position |
+| "Filters prevent NASDAQ and S&P 500 from going long simultaneously" | `_blocked_by_correlation` — a long in one index blocks a new long in the other |
+| Morning message: what's happening in the market today | `reporting.morning_report` — per-market price + each strategy's live stance |
+| Night message: exactly how the portfolio performed | `reporting.night_report` — day P&L, per-market trades, drawdown, risk halts |
+
+Run it:
+
+```bash
+# Backtest all 5 markets (synthetic smoke test, or point at real CSVs):
+PYTHONPATH=. python -m quantum_engine.cli portfolio-backtest --synthetic 20000
+PYTHONPATH=. python -m quantum_engine.cli portfolio-backtest --data-dir mydata/   # SPX.csv NDX.csv BTC.csv XAU.csv OIL.csv
+
+# Live PAPER trading on real quotes, all 5 markets at once:
+PYTHONPATH=. python -m quantum_engine.cli portfolio-live --provider yahoo
+
+# The two daily texts (schedule these on your machine):
+PYTHONPATH=. python -m quantum_engine.cli report            # morning briefing
+# night report is written automatically when a session/backtest ends
+```
+
+Schedule the two daily messages on Windows:
+
+```bat
+schtasks /create /tn "QE Morning" /sc daily /st 07:00 /tr "cmd /c cd /d F:\QuantumEngine\quantum-engine && python -m quantum_engine.cli report"
+```
+
+The whiteboard's own math (~1% per month, 12.68% annualized) is a *claim about
+someone else's account*, not a property of this code. A first synthetic-data
+run of this exact spec lost 20% and was stopped by the drawdown circuit
+breaker — which is precisely what the risk layer is for. Backtest on real
+data, walk it forward, and expect losing days.
+
+## The SniperScalper strategy
+
+It only enters when three independent conditions agree — this filtering is what
+separates a survivable scalper from a gambler:
+
+1. **Trend** — fast EMA above/below slow EMA, and price on the correct side of
+   a rolling VWAP.
+2. **Momentum** — RSI pulling back into the trend (buy dips in uptrends, sell
+   pops in downtrends), not chasing extremes.
+3. **Regime** — ATR inside a tradable band. Too quiet → spreads dominate; too
+   wild → news chaos. Stand aside in both.
+
+Stops and targets are **volatility-scaled** (ATR multiples), default reward:risk
+of 1.5:1. Because the filters are strict, it trades infrequently — that is by
+design, not a bug. Tune the parameters in `SniperScalperConfig` and, critically,
+**validate on real data with walk-forward testing** before trusting anything.
+
+Want a different strategy? Subclass `Strategy` and implement `on_bar`. The rest
+of the framework is unchanged.
+
+## Risk management (the part that actually matters)
+
+`RiskManager` enforces:
+
+- **Fixed-fractional sizing** — each trade risks a set % of equity given its
+  stop distance. The strategy never picks size; risk does.
+- **Daily loss limit** — a per-day kill switch; no new trades after the day's
+  realised loss crosses the threshold. Resets next session.
+- **Max-drawdown circuit breaker** — a hard, sticky halt from peak equity that a
+  new day does *not* clear.
+- **Position caps** — absolute lot ceiling and broker-minimum flooring.
+
+None of this makes trading safe. It makes ruin *less likely and bounded*.
+
+## Connecting a broker ("any broker")
+
+Implement the six methods of `BrokerAdapter` (`connect`, `disconnect`,
+`account`, `position`, `submit`, `close`) for your venue and the engine works
+unchanged. A MetaTrader 5 adapter ships in `brokers/mt5.py` as a reference.
+
+### ⚠️ Going live (real money)
+
+Live execution is **off by default** and gated:
+
+- `MT5Broker` refuses to initialise unless you pass `allow_live=True`.
+- The CLI never routes to a live broker — you must write your own script.
+- Start on a **demo account**. Paper-trade for weeks. Expect losing days.
+
+```python
+from quantum_engine.brokers.mt5 import MT5Broker  # Windows + MT5 terminal only
+broker = MT5Broker(symbol="XAUUSD", allow_live=True)  # deliberate, explicit
+```
+
+You accept all risk. The authors accept none.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Provided "as is", with no warranty and no
+liability for trading losses.

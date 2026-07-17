@@ -1,0 +1,11 @@
+# Core framework requires NOTHING beyond the Python standard library.
+# Everything below is optional and only needed for specific features.
+
+# Nicer YAML config parsing (a minimal fallback parser is built in):
+# PyYAML>=6.0
+
+# Live MetaTrader 5 execution (Windows only, real money — read the README):
+# MetaTrader5>=5.0
+
+# Running the test suite:
+# pytest>=7.0
