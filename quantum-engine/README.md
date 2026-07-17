@@ -96,6 +96,47 @@ pip install pytest
 PYTHONPATH=. python -m pytest -q
 ```
 
+## Getting it onto your machine (and automatic F:\ backups)
+
+Clone the branch straight onto your drive (Windows example):
+
+```bat
+git clone -b claude/quantum-engine-algo-trader-x7pxs2 https://github.com/aakansh2992/imsg.git F:\QuantumEngine
+cd F:\QuantumEngine\quantum-engine
+```
+
+The `quantum-engine` folder is fully self-contained (standard library only), so
+you can also copy it anywhere and make it its own repository:
+
+```bat
+robocopy F:\QuantumEngine\quantum-engine F:\QuantumEngineApp /E
+cd F:\QuantumEngineApp
+git init & git add -A & git commit -m "import quantum-engine"
+```
+
+### Back up every update to F:\ automatically (Windows)
+
+One-time setup — installs a git post-commit hook:
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\install-backup-hook.ps1
+```
+
+After that, **every `git commit` writes a backup** to
+`F:\QuantumEngineBackups\<timestamp>_<sha>\` containing a browsable copy of the
+project plus `repo.bundle` (the full git history in one file — restore with
+`git clone repo.bundle restored`). The hook never blocks a commit; if the drive
+or PowerShell is missing it warns and moves on.
+
+Manual backup any time, and useful options:
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\backup.ps1
+powershell -ExecutionPolicy Bypass -File scripts\backup.ps1 -BackupRoot "D:\Backups" -Keep 30
+```
+
+Set `QE_BACKUP_ROOT` once in your environment to change the default destination.
+
 ## Running it for real on your own machine
 
 The engine does real computation on real market data — locally, no cloud. The
