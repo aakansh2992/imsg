@@ -198,6 +198,50 @@ market-data business, not a limitation of this engine.
 > computation on real data — not a quantum computer, and not magic. No provider
 > or strategy here promises profit.
 
+## The 5-market portfolio bot (whiteboard build)
+
+Implements the multi-market design from the uploaded whiteboard, feature for
+feature:
+
+| Whiteboard claim | Implementation |
+|---|---|
+| Trades S&P 500, NASDAQ, Bitcoin, Gold, Oil | `engine/portfolio.py` — `default_markets()` (SPY/QQQ/BTC-USD/GC=F/CL=F via Yahoo, keyless) |
+| S&P + NASDAQ: mean reversion on 15-min candles | `strategy/mean_reversion.py` — z-score stretch beyond 2σ, snapback target at the rolling mean |
+| Bitcoin: momentum breakouts on the 1-hour chart, "heavy volume behind it" | `strategy/momentum_breakout.py` — N-bar key level break confirmed by ≥1.5× average volume, 2R target |
+| Gold + Oil: slower trend following on the 4-hour chart | `strategy/trend_following.py` — dual-EMA trend, enter on flip, exit on opposite flip |
+| "Every trade has a hard 1% stop loss" | `PortfolioEngine._stop_for` — stop distance = min(1.5×ATR, **1% of entry**); strategies may tighten it, never widen it |
+| "Position size adjusts based on market volatility" | fixed-fractional sizing against the ATR-derived stop: higher vol → wider (capped) stop → smaller position |
+| "Filters prevent NASDAQ and S&P 500 from going long simultaneously" | `_blocked_by_correlation` — a long in one index blocks a new long in the other |
+| Morning message: what's happening in the market today | `reporting.morning_report` — per-market price + each strategy's live stance |
+| Night message: exactly how the portfolio performed | `reporting.night_report` — day P&L, per-market trades, drawdown, risk halts |
+
+Run it:
+
+```bash
+# Backtest all 5 markets (synthetic smoke test, or point at real CSVs):
+PYTHONPATH=. python -m quantum_engine.cli portfolio-backtest --synthetic 20000
+PYTHONPATH=. python -m quantum_engine.cli portfolio-backtest --data-dir mydata/   # SPX.csv NDX.csv BTC.csv XAU.csv OIL.csv
+
+# Live PAPER trading on real quotes, all 5 markets at once:
+PYTHONPATH=. python -m quantum_engine.cli portfolio-live --provider yahoo
+
+# The two daily texts (schedule these on your machine):
+PYTHONPATH=. python -m quantum_engine.cli report            # morning briefing
+# night report is written automatically when a session/backtest ends
+```
+
+Schedule the two daily messages on Windows:
+
+```bat
+schtasks /create /tn "QE Morning" /sc daily /st 07:00 /tr "cmd /c cd /d F:\QuantumEngine\quantum-engine && python -m quantum_engine.cli report"
+```
+
+The whiteboard's own math (~1% per month, 12.68% annualized) is a *claim about
+someone else's account*, not a property of this code. A first synthetic-data
+run of this exact spec lost 20% and was stopped by the drawdown circuit
+breaker — which is precisely what the risk layer is for. Backtest on real
+data, walk it forward, and expect losing days.
+
 ## The SniperScalper strategy
 
 It only enters when three independent conditions agree — this filtering is what

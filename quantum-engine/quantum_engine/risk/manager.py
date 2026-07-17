@@ -89,9 +89,14 @@ class RiskManager:
 
     # --- sizing ------------------------------------------------------------
 
-    def position_size(self, equity: float, entry: float,
-                      stop: float) -> float:
+    def position_size(self, equity: float, entry: float, stop: float,
+                      contract_size: Optional[float] = None,
+                      max_lots: Optional[float] = None) -> float:
         """Lots to risk exactly `risk_per_trade` of equity given the stop.
+
+        `contract_size` / `max_lots` override the config defaults so one
+        account-level risk manager can size different instruments (used by
+        the multi-market portfolio engine).
 
         Returns 0.0 if the stop distance is degenerate or sizing rounds below
         the broker minimum.
@@ -101,12 +106,15 @@ class RiskManager:
             return 0.0
         risk_cash = equity * self.cfg.risk_per_trade
         # loss for 1.0 lot if stopped = stop_distance * contract_size
-        loss_per_lot = stop_distance * self.cfg.contract_size
+        loss_per_lot = stop_distance * (contract_size
+                                        if contract_size is not None
+                                        else self.cfg.contract_size)
         if loss_per_lot <= 0:
             return 0.0
         raw_lots = risk_cash / loss_per_lot
         lots = self._round_step(raw_lots)
-        lots = min(lots, self.cfg.max_position_lots)
+        lots = min(lots, max_lots if max_lots is not None
+                   else self.cfg.max_position_lots)
         if lots < self.cfg.min_position_lots:
             return 0.0
         return lots

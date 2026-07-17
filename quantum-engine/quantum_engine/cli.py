@@ -150,6 +150,117 @@ def _add_provider_args(p):
                    help="API key (twelvedata). Falls back to $TWELVEDATA_API_KEY")
 
 
+def cmd_portfolio_backtest(args) -> int:
+    from .data.feed import CSVBarFeed
+    from .engine.portfolio import PortfolioEngine, default_markets
+    from .reporting import night_report, save_report
+
+    markets = default_markets()
+    engine = PortfolioEngine(markets, starting_equity=args.equity)
+
+    if args.data_dir:
+        bars = {}
+        for m in markets:
+            path = os.path.join(args.data_dir, f"{m.symbol}.csv")
+            if not os.path.exists(path):
+                print(f"error: missing {path} (need one CSV per market: "
+                      f"{', '.join(x.symbol for x in markets)})",
+                      file=sys.stderr)
+                return 1
+            bars[m.symbol] = CSVBarFeed(path)
+        resample = not args.no_resample
+    else:
+        n = args.synthetic or 20_000
+        base_prices = {"SPX": 560.0, "NDX": 480.0, "BTC": 65_000.0,
+                       "XAU": 2_400.0, "OIL": 80.0}
+        bars = {m.symbol: SyntheticBarFeed(n_bars=n,
+                                           start_price=base_prices[m.symbol],
+                                           seed=101 + i)
+                for i, m in enumerate(markets)}
+        resample = True
+
+    result = engine.run_backtest(bars, resample=resample)
+    print("=" * 48)
+    print("  Quantum Engine — 5-market portfolio backtest")
+    print("=" * 48)
+    print(result.summary())
+    report = night_report(result)
+    path = save_report(report, "night", args.reports_dir)
+    print(f"Night report saved: {path}")
+    if not args.data_dir:
+        print("NOTE: synthetic data proves the pipeline, not profitability.")
+    return 0
+
+
+def cmd_portfolio_live(args) -> int:
+    from .data.ticker import BarAggregator
+    from .engine.portfolio import PortfolioEngine, PortfolioResult, default_markets
+    from .reporting import morning_report, night_report, save_report
+    import time as _time
+
+    provider = _make_provider(args)
+    markets = default_markets()
+    engine = PortfolioEngine(markets, starting_equity=args.equity)
+    aggs = {m.symbol: BarAggregator(60) for m in markets}
+    result = PortfolioResult(starting_equity=args.equity,
+                             ending_equity=args.equity)
+
+    prices: dict = {m.symbol: None for m in markets}
+    print(morning_report(markets, prices))
+    print(f"Live PAPER portfolio via {args.provider}; polling "
+          f"{len(markets)} markets every {args.poll}s. Ctrl-C to stop.")
+    try:
+        while True:
+            for m in markets:
+                try:
+                    tick = provider.quote(m.data_symbol)
+                except Exception as exc:
+                    logging.getLogger("quantum_engine").warning(
+                        "%s quote failed: %s", m.symbol, exc)
+                    continue
+                prices[m.symbol] = tick.mid
+                engine.broker.set_price(m.symbol, tick.mid)
+                base_bar = aggs[m.symbol].add(tick)
+                if base_bar is not None:
+                    engine.risk.roll_day(base_bar.timestamp.date(),
+                                         engine.broker.equity())
+                    state = engine.states[m.symbol]
+                    tf_bar = state.resampler.add(base_bar)
+                    if tf_bar is not None:
+                        engine._on_tf_bar(state, tf_bar, result)
+                    result.equity_curve.append(
+                        (base_bar.timestamp, engine.broker.equity()))
+            _time.sleep(args.poll)
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    result.ending_equity = engine.broker.equity()
+    result.halted_reason = engine.risk.state.halted_reason
+    report = night_report(result)
+    print(report)
+    path = save_report(report, "night", args.reports_dir)
+    print(f"Night report saved: {path}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    from .engine.portfolio import default_markets
+    from .reporting import morning_report, save_report
+
+    markets = default_markets()
+    prices: dict = {}
+    provider = _make_provider(args)
+    for m in markets:
+        try:
+            prices[m.symbol] = provider.quote(m.data_symbol).mid
+        except Exception:
+            prices[m.symbol] = None
+    text = morning_report(markets, prices)
+    print(text)
+    path = save_report(text, "morning", args.reports_dir)
+    print(f"Saved: {path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="quantum_engine", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -189,6 +300,33 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--max-bars", type=int, default=None,
                     help="Stop after this many bars (default: run until Ctrl-C)")
     lv.set_defaults(func=cmd_live)
+
+    pb = sub.add_parser("portfolio-backtest",
+                        help="Backtest the 5-market portfolio bot")
+    pb.add_argument("--synthetic", type=int, default=None,
+                    help="Synthetic base bars per market (default 20000)")
+    pb.add_argument("--data-dir",
+                    help="Directory with SPX.csv NDX.csv BTC.csv XAU.csv OIL.csv")
+    pb.add_argument("--no-resample", action="store_true",
+                    help="CSVs are already at each market's timeframe")
+    pb.add_argument("--equity", type=float, default=10_000.0)
+    pb.add_argument("--reports-dir", default="reports")
+    pb.set_defaults(func=cmd_portfolio_backtest)
+
+    pl = sub.add_parser("portfolio-live",
+                        help="Live PAPER trade all 5 markets on real quotes")
+    _add_provider_args(pl)
+    pl.add_argument("--poll", type=float, default=12.0,
+                    help="Seconds per polling cycle across all markets")
+    pl.add_argument("--equity", type=float, default=10_000.0)
+    pl.add_argument("--reports-dir", default="reports")
+    pl.set_defaults(func=cmd_portfolio_live)
+
+    rp = sub.add_parser("report",
+                        help="Generate the morning briefing (live quotes)")
+    _add_provider_args(rp)
+    rp.add_argument("--reports-dir", default="reports")
+    rp.set_defaults(func=cmd_report)
     return p
 
 
